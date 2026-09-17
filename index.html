@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>To do</title>
+    <link rel="stylesheet" href="style.css">
+
+
+</head>
+<body>
+    <main class="todo-container">
+
+    <header class="todo-header">
+        <h1>My To Do List</h1>
+        <p>Keep track of what needs to get done.</p>
+    </header>
+
+    <section class="counter">
+        <button id="totalTasks" ></button>
+        <button id="complete"></button>
+        <button id="incomplete"></button>
+
+
+    </section>
+
+    <section class="task-input-section">
+
+        <input
+            id="task"
+            type="text"
+            placeholder="What needs to be done?"
+            autocomplete="off"
+        >
+        <p id="taskError"></p>
+
+        <div class="button-group">
+            <button id="addButton" class="add-button">
+                Add Task
+            </button>
+
+            <button id="clearallButton" class="clear-button">
+                Clear All
+            </button>
+        </div>
+
+    </section>
+
+    <input 
+    id="searchInput" 
+    type="text" 
+    placeholder="Search tasks..." 
+    autocomplete="off"
+>
+
+    <section class="tasks-section">
+        <ul id="taskList"></ul>
+    </section>
+
+
+</main>
+
+
+<div id="editModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+        <h2>Edit Task</h2>
+        <input id="editTaskInput" type="text" placeholder="Update task title..." autocomplete="off">
+        <p id="editTaskError"></p>
+
+        <div class="modal-actions">
+            <button id="cancelEditButton" class="modal-cancel-btn">Cancel</button>
+            <button id="saveEditButton" class="modal-save-btn">Save Changes</button>
+        </div>
+    </div>
+</div>
+
+<div id="clearAllModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+        <h2>Are you sure?</h2>
+        <p>This action will delete all your existing tasks.</p>
+
+        <div class="modal-actions">
+            <button id="cancelClearAllButton" class="modal-cancel-btn">Cancel</button>
+            <button id="confirmClearAllButton" class="modal-save-btn">Clear All</button>
+        </div>
+    </div>
+</div>
+
+<script src="script.js"></script>
+    
+</body>
+</html>
