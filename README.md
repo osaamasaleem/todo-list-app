@@ -3,8 +3,7 @@
 A responsive, state-driven task management application built with vanilla JavaScript, modern CSS, and HTML5. All tasks and statuses persist locally across page refreshes.
 
 ## 🚀 Live Demo
-[View Live on Vercel](https://your-project-url.vercel.app)
-
+[View Live on Vercel](https://todo-list-app-gamma-umber.vercel.app)
 ---
 
 ## ✨ Features
