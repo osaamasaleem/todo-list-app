@@ -54,6 +54,38 @@ body {
 .auth-container {
     display: flex;
     align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.sync-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 10px;
+    border-radius: 9999px;
+    background: #f1f5f9;
+    color: #475569;
+    border: 1px solid #e2e8f0;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.sync-badge.online-synced {
+    background: #f0fdf4;
+    color: #16a34a;
+    border-color: #bbf7d0;
+}
+
+.sync-badge.syncing {
+    background: #eff6ff;
+    color: #2563eb;
+    border-color: #bfdbfe;
+}
+
+.sync-badge.offline {
+    background: #fffbeb;
+    color: #d97706;
+    border-color: #fde68a;
 }
 
 .google-sign-in-btn {

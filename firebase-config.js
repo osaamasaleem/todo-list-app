@@ -7,9 +7,12 @@ import {
     onAuthStateChanged 
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import { 
-    getFirestore, 
+    initializeFirestore,
+    persistentLocalCache,
+    persistentMultipleTabManager,
     collection, 
     doc, 
+    setDoc,
     addDoc, 
     updateDoc, 
     deleteDoc, 
@@ -31,7 +34,17 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getFirestore(app);
+
+// Initialize Firestore with multi-tab offline persistence
+let db;
+try {
+    db = initializeFirestore(app, {
+        localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+    });
+} catch (e) {
+    console.warn("Firestore offline persistence fallback:", e);
+}
+
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: "select_account" });
 
@@ -44,6 +57,7 @@ export {
     onAuthStateChanged,
     collection,
     doc,
+    setDoc,
     addDoc,
     updateDoc,
     deleteDoc,

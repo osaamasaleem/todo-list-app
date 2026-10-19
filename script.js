@@ -1,32 +1,26 @@
-import {
-    auth,
-    db,
-    googleProvider,
-    signInWithPopup,
-    signOut,
-    onAuthStateChanged,
-    collection,
-    doc,
-    addDoc,
-    updateDoc,
-    deleteDoc,
-    onSnapshot,
-    query,
-    orderBy,
-    writeBatch,
-    getDocs
-} from "./firebase-config.js";
+/* ==========================================================================
+   0. SERVICE WORKER REGISTRATION (OFFLINE PWA)
+   ========================================================================== */
+
+if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch((err) => {
+            console.warn("ServiceWorker registration warning:", err);
+        });
+    });
+}
+
 
 /* ==========================================================================
    1. DOM ELEMENTS
    ========================================================================== */
 
-// Auth Elements
+// Auth & Status Elements
+const syncBadge = document.getElementById("syncBadge");
 const googleSignInBtn = document.getElementById("googleSignInBtn");
 const userProfile = document.getElementById("userProfile");
 const userAvatar = document.getElementById("userAvatar");
 const userName = document.getElementById("userName");
-const syncStatus = document.getElementById("syncStatus");
 const signOutBtn = document.getElementById("signOutBtn");
 
 // Task Input & Action Controls
@@ -65,20 +59,51 @@ const tasks = [];
 let currentlyEditingTask = null;
 let currentFilter = "all"; // Options: "all", "complete", "incomplete"
 let currentUser = null;
+let fb = null; // Will hold dynamically imported Firebase module when online
 let unsubscribeSnapshot = null;
+let isSyncing = false;
 
 
 /* ==========================================================================
-   3. DATA & STORAGE HELPERS (LOCAL + CLOUD)
+   3. DATA & LOCAL STORAGE HELPERS
    ========================================================================== */
 
-function saveLocalTasks() {
-    localStorage.setItem("savedTasks", JSON.stringify(tasks));
+function getLocalTasks() {
+    try {
+        const fetchedTasks = localStorage.getItem("savedTasks");
+        if (!fetchedTasks) return [];
+        const parsed = JSON.parse(fetchedTasks);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+        console.error("Error reading localStorage:", e);
+        return [];
+    }
 }
 
-function getLocalTasks() {
-    const fetchedTasks = localStorage.getItem("savedTasks");
-    return fetchedTasks ? JSON.parse(fetchedTasks) : [];
+function saveLocalTasks() {
+    try {
+        localStorage.setItem("savedTasks", JSON.stringify(tasks));
+    } catch (e) {
+        console.error("Error writing to localStorage:", e);
+    }
+}
+
+function updateSyncStatusUI(status) {
+    if (!syncBadge) return;
+
+    syncBadge.className = "sync-badge";
+    if (status === "offline") {
+        syncBadge.classList.add("offline");
+        syncBadge.textContent = "● Offline (Saved Locally)";
+    } else if (status === "syncing") {
+        syncBadge.classList.add("syncing");
+        syncBadge.textContent = "● Syncing...";
+    } else if (status === "synced") {
+        syncBadge.classList.add("online-synced");
+        syncBadge.textContent = "● Cloud Synced";
+    } else {
+        syncBadge.textContent = "● Local Storage";
+    }
 }
 
 function calculateCounter() {
@@ -106,151 +131,7 @@ function getSearchedTasks(tasksToSearch) {
 
 
 /* ==========================================================================
-   4. CLOUD SYNC & FIRESTORE INTEGRATION
-   ========================================================================== */
-
-// Listen to Firestore real-time updates for the logged-in user
-function listenToTasks(userId) {
-    if (unsubscribeSnapshot) {
-        unsubscribeSnapshot();
-    }
-
-    syncStatus.textContent = "● Syncing...";
-    syncStatus.style.color = "#d97706";
-
-    const tasksRef = collection(db, "users", userId, "tasks");
-    const q = query(tasksRef, orderBy("createdAt", "asc"));
-
-    unsubscribeSnapshot = onSnapshot(q, (snapshot) => {
-        tasks.length = 0;
-        snapshot.forEach((docSnapshot) => {
-            const data = docSnapshot.data();
-            tasks.push({
-                id: docSnapshot.id,
-                title: data.title || "",
-                completed: Boolean(data.completed),
-                createdAt: data.createdAt || 0
-            });
-        });
-
-        syncStatus.textContent = "● Cloud Synced";
-        syncStatus.style.color = "#16a34a";
-        updateCounter();
-        renderTasks();
-    }, (error) => {
-        console.error("Firestore sync error:", error);
-        syncStatus.textContent = "● Sync Error";
-        syncStatus.style.color = "#dc2626";
-    });
-}
-
-// Migrate existing localStorage tasks to Firestore when user first signs in
-async function migrateLocalTasksToCloud(userId) {
-    const local = getLocalTasks();
-    if (!local || local.length === 0) return;
-
-    try {
-        const tasksRef = collection(db, "users", userId, "tasks");
-        const existingDocs = await getDocs(tasksRef);
-
-        if (existingDocs.empty) {
-            const batch = writeBatch(db);
-            local.forEach((item, index) => {
-                const newDocRef = doc(tasksRef);
-                batch.set(newDocRef, {
-                    title: item.title,
-                    completed: Boolean(item.completed),
-                    createdAt: Date.now() + index
-                });
-            });
-            await batch.commit();
-            localStorage.removeItem("savedTasks");
-        }
-    } catch (err) {
-        console.error("Migration error:", err);
-    }
-}
-
-// Cloud-aware Task Operations
-async function addNewTask(title) {
-    if (currentUser) {
-        const tasksRef = collection(db, "users", currentUser.uid, "tasks");
-        await addDoc(tasksRef, {
-            title,
-            completed: false,
-            createdAt: Date.now()
-        });
-    } else {
-        tasks.push({
-            id: (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()),
-            title,
-            completed: false,
-            createdAt: Date.now()
-        });
-        saveLocalTasks();
-        updateCounter();
-        renderTasks();
-    }
-}
-
-async function updateTaskCompletion(task, completed) {
-    task.completed = completed;
-    if (currentUser && task.id) {
-        const docRef = doc(db, "users", currentUser.uid, "tasks", task.id);
-        await updateDoc(docRef, { completed });
-    } else {
-        saveLocalTasks();
-        updateCounter();
-        renderTasks();
-    }
-}
-
-async function updateTaskTitle(task, newTitle) {
-    task.title = newTitle;
-    if (currentUser && task.id) {
-        const docRef = doc(db, "users", currentUser.uid, "tasks", task.id);
-        await updateDoc(docRef, { title: newTitle });
-    } else {
-        saveLocalTasks();
-        renderTasks();
-    }
-}
-
-async function removeTask(task) {
-    if (currentUser && task.id) {
-        const docRef = doc(db, "users", currentUser.uid, "tasks", task.id);
-        await deleteDoc(docRef);
-    } else {
-        const index = tasks.indexOf(task);
-        if (index > -1) {
-            tasks.splice(index, 1);
-            saveLocalTasks();
-            updateCounter();
-            renderTasks();
-        }
-    }
-}
-
-async function clearAllTasksList() {
-    if (currentUser) {
-        const tasksRef = collection(db, "users", currentUser.uid, "tasks");
-        const snapshot = await getDocs(tasksRef);
-        const batch = writeBatch(db);
-        snapshot.forEach((docSnap) => {
-            batch.delete(docSnap.ref);
-        });
-        await batch.commit();
-    } else {
-        tasks.length = 0;
-        saveLocalTasks();
-        updateCounter();
-        renderTasks();
-    }
-}
-
-
-/* ==========================================================================
-   5. RENDERING & UI UPDATES
+   4. RENDERING & UI UPDATES
    ========================================================================== */
 
 function updateCounter() {
@@ -295,21 +176,12 @@ function createTaskElement(task) {
 
     // Item Action: Toggle Completion
     checkBox.addEventListener("change", async function () {
-        try {
-            await updateTaskCompletion(task, checkBox.checked);
-        } catch (err) {
-            console.error("Error updating completion:", err);
-            checkBox.checked = !checkBox.checked;
-        }
+        await updateTaskCompletion(task, checkBox.checked);
     });
 
     // Item Action: Delete Task
     deleteButton.addEventListener("click", async function () {
-        try {
-            await removeTask(task);
-        } catch (err) {
-            console.error("Error deleting task:", err);
-        }
+        await removeTask(task);
     });
 
     // Item Action: Open Edit Modal
@@ -349,30 +221,309 @@ function renderTasks() {
 
 
 /* ==========================================================================
-   6. EVENT LISTENERS
+   5. TASK CRUD (OFFLINE-FIRST WITH BACKGROUND CLOUD SYNC)
    ========================================================================== */
 
-// Auth Buttons
-googleSignInBtn.addEventListener("click", async function () {
+function generateId() {
+    return (typeof crypto !== "undefined" && crypto.randomUUID) 
+        ? crypto.randomUUID() 
+        : String(Date.now() + Math.random());
+}
+
+async function addNewTask(title) {
+    const task = {
+        id: generateId(),
+        title: title,
+        completed: false,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        synced: false
+    };
+
+    // 1. Immediately update local state & UI (Instant response even offline)
+    tasks.push(task);
+    saveLocalTasks();
+    updateCounter();
+    renderTasks();
+
+    // 2. If online and logged in, push to Firestore
+    if (currentUser && navigator.onLine && fb) {
+        try {
+            const taskDocRef = fb.doc(fb.db, "users", currentUser.uid, "tasks", task.id);
+            await fb.setDoc(taskDocRef, {
+                title: task.title,
+                completed: task.completed,
+                createdAt: task.createdAt,
+                updatedAt: task.updatedAt
+            });
+            task.synced = true;
+            saveLocalTasks();
+        } catch (err) {
+            console.warn("Could not sync new task to cloud (will sync on reconnect):", err);
+        }
+    }
+}
+
+async function updateTaskCompletion(task, completed) {
+    // 1. Immediate local update
+    task.completed = completed;
+    task.updatedAt = Date.now();
+    task.synced = false;
+    saveLocalTasks();
+    updateCounter();
+    renderTasks();
+
+    // 2. Cloud update if online
+    if (currentUser && navigator.onLine && fb && task.id) {
+        try {
+            const taskDocRef = fb.doc(fb.db, "users", currentUser.uid, "tasks", task.id);
+            await fb.updateDoc(taskDocRef, {
+                completed: completed,
+                updatedAt: task.updatedAt
+            });
+            task.synced = true;
+            saveLocalTasks();
+        } catch (err) {
+            console.warn("Could not sync completion to cloud (will sync on reconnect):", err);
+        }
+    }
+}
+
+async function updateTaskTitle(task, newTitle) {
+    // 1. Immediate local update
+    task.title = newTitle;
+    task.updatedAt = Date.now();
+    task.synced = false;
+    saveLocalTasks();
+    renderTasks();
+
+    // 2. Cloud update if online
+    if (currentUser && navigator.onLine && fb && task.id) {
+        try {
+            const taskDocRef = fb.doc(fb.db, "users", currentUser.uid, "tasks", task.id);
+            await fb.updateDoc(taskDocRef, {
+                title: newTitle,
+                updatedAt: task.updatedAt
+            });
+            task.synced = true;
+            saveLocalTasks();
+        } catch (err) {
+            console.warn("Could not sync edit to cloud (will sync on reconnect):", err);
+        }
+    }
+}
+
+async function removeTask(task) {
+    // 1. Immediate local removal
+    const index = tasks.indexOf(task);
+    if (index > -1) {
+        tasks.splice(index, 1);
+        saveLocalTasks();
+        updateCounter();
+        renderTasks();
+    }
+
+    // 2. Cloud removal if online
+    if (currentUser && navigator.onLine && fb && task.id) {
+        try {
+            const taskDocRef = fb.doc(fb.db, "users", currentUser.uid, "tasks", task.id);
+            await fb.deleteDoc(taskDocRef);
+        } catch (err) {
+            console.warn("Could not delete from cloud:", err);
+        }
+    }
+}
+
+async function clearAllTasksList() {
+    // 1. Immediate local clear
+    tasks.length = 0;
+    saveLocalTasks();
+    updateCounter();
+    renderTasks();
+
+    // 2. Cloud clear if online
+    if (currentUser && navigator.onLine && fb) {
+        try {
+            const tasksRef = fb.collection(fb.db, "users", currentUser.uid, "tasks");
+            const snapshot = await fb.getDocs(tasksRef);
+            const batch = fb.writeBatch(fb.db);
+            snapshot.forEach((docSnap) => batch.delete(docSnap.ref));
+            await batch.commit();
+        } catch (err) {
+            console.warn("Could not clear cloud tasks:", err);
+        }
+    }
+}
+
+
+/* ==========================================================================
+   6. AUTOMATIC CLOUD SYNC & RECONNECT LOGIC
+   ========================================================================== */
+
+// Sync all unsynced local tasks to Firestore
+async function syncLocalTasksWithCloud(userId) {
+    if (!fb || !navigator.onLine || isSyncing) return;
+    isSyncing = true;
+    updateSyncStatusUI("syncing");
+
     try {
-        await signInWithPopup(auth, googleProvider);
+        const tasksRef = fb.collection(fb.db, "users", userId, "tasks");
+        const cloudDocsSnapshot = await fb.getDocs(tasksRef);
+        const cloudIds = new Set();
+        cloudDocsSnapshot.forEach(docSnap => cloudIds.add(docSnap.id));
+
+        const batch = fb.writeBatch(fb.db);
+        let pendingUploads = 0;
+
+        tasks.forEach((task) => {
+            if (!task.id) task.id = generateId();
+
+            // If task is not in cloud or has pending local edits
+            if (!cloudIds.has(task.id) || !task.synced) {
+                const docRef = fb.doc(fb.db, "users", userId, "tasks", task.id);
+                batch.set(docRef, {
+                    title: task.title,
+                    completed: Boolean(task.completed),
+                    createdAt: task.createdAt || Date.now(),
+                    updatedAt: task.updatedAt || Date.now()
+                });
+                task.synced = true;
+                pendingUploads++;
+            }
+        });
+
+        if (pendingUploads > 0) {
+            await batch.commit();
+            saveLocalTasks();
+        }
     } catch (err) {
-        console.error("Google sign-in error:", err);
+        console.warn("Background sync error:", err);
+    } finally {
+        isSyncing = false;
+    }
+}
+
+// Subscribe to real-time cloud updates
+function startRealtimeCloudListener(userId) {
+    if (unsubscribeSnapshot) {
+        unsubscribeSnapshot();
+        unsubscribeSnapshot = null;
+    }
+
+    if (!fb || !navigator.onLine) {
+        updateSyncStatusUI("offline");
+        return;
+    }
+
+    const tasksRef = fb.collection(fb.db, "users", userId, "tasks");
+    const q = fb.query(tasksRef, fb.orderBy("createdAt", "asc"));
+
+    unsubscribeSnapshot = fb.onSnapshot(q, (snapshot) => {
+        // Merge cloud snapshot with local memory
+        const cloudTasks = [];
+        snapshot.forEach((docSnap) => {
+            const data = docSnap.data();
+            cloudTasks.push({
+                id: docSnap.id,
+                title: data.title || "",
+                completed: Boolean(data.completed),
+                createdAt: data.createdAt || 0,
+                updatedAt: data.updatedAt || 0,
+                synced: true
+            });
+        });
+
+        // Replace local state with latest verified cloud data
+        tasks.length = 0;
+        tasks.push(...cloudTasks);
+        saveLocalTasks(); // Update offline backup
+        updateSyncStatusUI(navigator.onLine ? "synced" : "offline");
+        updateCounter();
+        renderTasks();
+    }, (error) => {
+        console.warn("Firestore onSnapshot error:", error);
+        updateSyncStatusUI(navigator.onLine ? "synced" : "offline");
+    });
+}
+
+
+/* ==========================================================================
+   7. DYNAMIC FIREBASE INITIALIZER (LOADED SAFELY IN BACKGROUND)
+   ========================================================================== */
+
+async function initFirebase() {
+    if (!navigator.onLine) {
+        updateSyncStatusUI("offline");
+        return;
+    }
+
+    try {
+        if (!fb) {
+            fb = await import("./firebase-config.js");
+            
+            // Listen to Auth State
+            fb.onAuthStateChanged(fb.auth, async (user) => {
+                if (user) {
+                    currentUser = user;
+                    googleSignInBtn.style.display = "none";
+                    userProfile.style.display = "flex";
+                    userAvatar.src = user.photoURL || "icon.png";
+                    userName.textContent = user.displayName || user.email || "Account";
+
+                    // Sync any tasks created while offline / logged out
+                    await syncLocalTasksWithCloud(user.uid);
+                    startRealtimeCloudListener(user.uid);
+                } else {
+                    currentUser = null;
+                    if (unsubscribeSnapshot) {
+                        unsubscribeSnapshot();
+                        unsubscribeSnapshot = null;
+                    }
+                    userProfile.style.display = "none";
+                    googleSignInBtn.style.display = "inline-flex";
+                    updateSyncStatusUI(navigator.onLine ? "local" : "offline");
+                }
+            });
+        }
+    } catch (err) {
+        console.warn("Firebase could not be loaded (offline or network blocked):", err);
+        updateSyncStatusUI("offline");
+    }
+}
+
+
+/* ==========================================================================
+   8. EVENT LISTENERS
+   ========================================================================== */
+
+// Auth Action: Sign In
+googleSignInBtn.addEventListener("click", async function () {
+    if (!navigator.onLine) {
+        alert("You are currently offline. Please connect to the internet to sign in with Google.");
+        return;
+    }
+
+    try {
+        if (!fb) await initFirebase();
+        await fb.signInWithPopup(fb.auth, fb.googleProvider);
+    } catch (err) {
+        console.error("Sign-in error:", err);
         if (err.code !== "auth/popup-closed-by-user" && err.code !== "auth/cancelled-popup-request") {
             alert(`Sign-in failed: ${err.message}`);
         }
     }
 });
 
+// Auth Action: Sign Out
 signOutBtn.addEventListener("click", async function () {
     try {
-        await signOut(auth);
+        if (fb) await fb.signOut(fb.auth);
     } catch (err) {
         console.error("Sign-out error:", err);
     }
 });
 
-// Add Task
+// Add Task Button
 addButton.addEventListener("click", async function () {
     const taskTitle = taskInput.value.trim();
 
@@ -384,12 +535,7 @@ addButton.addEventListener("click", async function () {
     taskInput.value = "";
     taskError.textContent = "";
 
-    try {
-        await addNewTask(taskTitle);
-    } catch (err) {
-        console.error("Error adding task:", err);
-        taskError.textContent = "Failed to save task. Please try again.";
-    }
+    await addNewTask(taskTitle);
 });
 
 taskInput.addEventListener("input", function () {
@@ -409,12 +555,12 @@ taskInput.addEventListener("keydown", function (e) {
     }
 });
 
-// Search
+// Search Input
 searchInput.addEventListener("input", function () {
     renderTasks();
 });
 
-// Filter Buttons
+// Filter Tabs
 totalTasks.addEventListener("click", function () {
     currentFilter = "all";
     renderTasks();
@@ -430,7 +576,7 @@ incompleteTasks.addEventListener("click", function () {
     renderTasks();
 });
 
-// Edit Modal Actions
+// Edit Modal
 saveEditButton.addEventListener("click", async function () {
     const newTitle = editTaskInput.value.trim();
 
@@ -439,13 +585,8 @@ saveEditButton.addEventListener("click", async function () {
         return;
     }
 
-    try {
-        await updateTaskTitle(currentlyEditingTask, newTitle);
-        editModal.style.display = "none";
-    } catch (err) {
-        console.error("Error editing task:", err);
-        editTaskError.textContent = "Failed to update task.";
-    }
+    await updateTaskTitle(currentlyEditingTask, newTitle);
+    editModal.style.display = "none";
 });
 
 cancelEditButton.addEventListener("click", function () {
@@ -456,7 +597,7 @@ editTaskInput.addEventListener("input", function () {
     editTaskError.textContent = "";
 });
 
-// Clear All Modal Actions
+// Clear All Modal
 clearallButton.addEventListener("click", function () {
     clearAllModal.style.display = "flex";
 });
@@ -466,44 +607,40 @@ cancelClearAllButton.addEventListener("click", function () {
 });
 
 confirmClearAllButton.addEventListener("click", async function () {
-    try {
-        await clearAllTasksList();
-        clearAllModal.style.display = "none";
-    } catch (err) {
-        console.error("Error clearing all tasks:", err);
-        alert("Failed to clear tasks. Please try again.");
+    await clearAllTasksList();
+    clearAllModal.style.display = "none";
+});
+
+// Network Status Listeners (Auto Reconnect & Sync)
+window.addEventListener("online", async () => {
+    updateSyncStatusUI("syncing");
+    await initFirebase();
+    if (currentUser) {
+        await syncLocalTasksWithCloud(currentUser.uid);
+        startRealtimeCloudListener(currentUser.uid);
+    } else {
+        updateSyncStatusUI("local");
     }
+});
+
+window.addEventListener("offline", () => {
+    updateSyncStatusUI("offline");
 });
 
 
 /* ==========================================================================
-   7. APP & AUTH INITIALIZATION
+   9. IMMEDIATE SYNCHRONOUS INITIALIZATION
    ========================================================================== */
 
-// Listen to Auth state changes
-onAuthStateChanged(auth, async (user) => {
-    if (user) {
-        currentUser = user;
-        googleSignInBtn.style.display = "none";
-        userProfile.style.display = "flex";
-        userAvatar.src = user.photoURL || "icon.png";
-        userName.textContent = user.displayName || user.email || "Account";
+// 1. Immediately load tasks from localStorage & render UI
+tasks.push(...getLocalTasks());
+updateCounter();
+renderTasks();
 
-        await migrateLocalTasksToCloud(user.uid);
-        listenToTasks(user.uid);
-    } else {
-        currentUser = null;
-        if (unsubscribeSnapshot) {
-            unsubscribeSnapshot();
-            unsubscribeSnapshot = null;
-        }
+// 2. Set initial sync status indicator
+updateSyncStatusUI(navigator.onLine ? "local" : "offline");
 
-        userProfile.style.display = "none";
-        googleSignInBtn.style.display = "inline-flex";
-
-        tasks.length = 0;
-        tasks.push(...getLocalTasks());
-        updateCounter();
-        renderTasks();
-    }
-});
+// 3. Attempt background Firebase connection if online
+if (navigator.onLine) {
+    initFirebase();
+}
