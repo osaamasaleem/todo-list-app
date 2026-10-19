@@ -30,15 +30,113 @@ body {
     margin-bottom: 24px;
 }
 
-.todo-header h1 {
+.header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.header-text h1 {
     font-size: 32px;
     margin-bottom: 6px;
     color: #111827;
 }
 
-.todo-header p {
+.header-text p {
     color: #6b7280;
     font-size: 15px;
+}
+
+/* Auth Container */
+
+.auth-container {
+    display: flex;
+    align-items: center;
+}
+
+.google-sign-in-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #ffffff;
+    color: #374151;
+    border: 1px solid #d1d5db;
+    border-radius: 9999px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    transition: all 0.2s ease;
+}
+
+.google-sign-in-btn:hover {
+    background: #f9fafb;
+    border-color: #9ca3af;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.google-icon {
+    flex-shrink: 0;
+}
+
+.user-profile {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 9999px;
+    padding: 4px 10px 4px 4px;
+}
+
+.user-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1.5px solid #4f46e5;
+}
+
+.user-info {
+    display: flex;
+    flex-direction: column;
+    text-align: left;
+}
+
+.user-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: #1f2937;
+    max-width: 120px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sync-status {
+    font-size: 10px;
+    font-weight: 600;
+    color: #16a34a;
+}
+
+.sign-out-btn {
+    background: transparent;
+    color: #6b7280;
+    border: none;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.sign-out-btn:hover {
+    background: #fee2e2;
+    color: #dc2626;
 }
 
 /* Counter / Filter Bar */

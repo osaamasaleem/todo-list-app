@@ -1,6 +1,33 @@
+import {
+    auth,
+    db,
+    googleProvider,
+    signInWithPopup,
+    signOut,
+    onAuthStateChanged,
+    collection,
+    doc,
+    addDoc,
+    updateDoc,
+    deleteDoc,
+    onSnapshot,
+    query,
+    orderBy,
+    writeBatch,
+    getDocs
+} from "./firebase-config.js";
+
 /* ==========================================================================
    1. DOM ELEMENTS
    ========================================================================== */
+
+// Auth Elements
+const googleSignInBtn = document.getElementById("googleSignInBtn");
+const userProfile = document.getElementById("userProfile");
+const userAvatar = document.getElementById("userAvatar");
+const userName = document.getElementById("userName");
+const syncStatus = document.getElementById("syncStatus");
+const signOutBtn = document.getElementById("signOutBtn");
 
 // Task Input & Action Controls
 const taskInput = document.querySelector("#task");
@@ -37,17 +64,19 @@ const confirmClearAllButton = document.getElementById("confirmClearAllButton");
 const tasks = [];
 let currentlyEditingTask = null;
 let currentFilter = "all"; // Options: "all", "complete", "incomplete"
+let currentUser = null;
+let unsubscribeSnapshot = null;
 
 
 /* ==========================================================================
-   3. DATA & STORAGE HELPERS
+   3. DATA & STORAGE HELPERS (LOCAL + CLOUD)
    ========================================================================== */
 
-function saveTasks() {
+function saveLocalTasks() {
     localStorage.setItem("savedTasks", JSON.stringify(tasks));
 }
 
-function getTasks() {
+function getLocalTasks() {
     const fetchedTasks = localStorage.getItem("savedTasks");
     return fetchedTasks ? JSON.parse(fetchedTasks) : [];
 }
@@ -75,16 +104,153 @@ function getSearchedTasks(tasksToSearch) {
     return tasksToSearch.filter(task => task.title.toLowerCase().includes(searchTerm));
 }
 
-// Single function to sync storage, update counts, and re-draw the UI
-function syncAppState() {
-    saveTasks();
-    updateCounter();
-    renderTasks();
+
+/* ==========================================================================
+   4. CLOUD SYNC & FIRESTORE INTEGRATION
+   ========================================================================== */
+
+// Listen to Firestore real-time updates for the logged-in user
+function listenToTasks(userId) {
+    if (unsubscribeSnapshot) {
+        unsubscribeSnapshot();
+    }
+
+    syncStatus.textContent = "● Syncing...";
+    syncStatus.style.color = "#d97706";
+
+    const tasksRef = collection(db, "users", userId, "tasks");
+    const q = query(tasksRef, orderBy("createdAt", "asc"));
+
+    unsubscribeSnapshot = onSnapshot(q, (snapshot) => {
+        tasks.length = 0;
+        snapshot.forEach((docSnapshot) => {
+            const data = docSnapshot.data();
+            tasks.push({
+                id: docSnapshot.id,
+                title: data.title || "",
+                completed: Boolean(data.completed),
+                createdAt: data.createdAt || 0
+            });
+        });
+
+        syncStatus.textContent = "● Cloud Synced";
+        syncStatus.style.color = "#16a34a";
+        updateCounter();
+        renderTasks();
+    }, (error) => {
+        console.error("Firestore sync error:", error);
+        syncStatus.textContent = "● Sync Error";
+        syncStatus.style.color = "#dc2626";
+    });
+}
+
+// Migrate existing localStorage tasks to Firestore when user first signs in
+async function migrateLocalTasksToCloud(userId) {
+    const local = getLocalTasks();
+    if (!local || local.length === 0) return;
+
+    try {
+        const tasksRef = collection(db, "users", userId, "tasks");
+        const existingDocs = await getDocs(tasksRef);
+
+        if (existingDocs.empty) {
+            const batch = writeBatch(db);
+            local.forEach((item, index) => {
+                const newDocRef = doc(tasksRef);
+                batch.set(newDocRef, {
+                    title: item.title,
+                    completed: Boolean(item.completed),
+                    createdAt: Date.now() + index
+                });
+            });
+            await batch.commit();
+            localStorage.removeItem("savedTasks");
+        }
+    } catch (err) {
+        console.error("Migration error:", err);
+    }
+}
+
+// Cloud-aware Task Operations
+async function addNewTask(title) {
+    if (currentUser) {
+        const tasksRef = collection(db, "users", currentUser.uid, "tasks");
+        await addDoc(tasksRef, {
+            title,
+            completed: false,
+            createdAt: Date.now()
+        });
+    } else {
+        tasks.push({
+            id: (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()),
+            title,
+            completed: false,
+            createdAt: Date.now()
+        });
+        saveLocalTasks();
+        updateCounter();
+        renderTasks();
+    }
+}
+
+async function updateTaskCompletion(task, completed) {
+    task.completed = completed;
+    if (currentUser && task.id) {
+        const docRef = doc(db, "users", currentUser.uid, "tasks", task.id);
+        await updateDoc(docRef, { completed });
+    } else {
+        saveLocalTasks();
+        updateCounter();
+        renderTasks();
+    }
+}
+
+async function updateTaskTitle(task, newTitle) {
+    task.title = newTitle;
+    if (currentUser && task.id) {
+        const docRef = doc(db, "users", currentUser.uid, "tasks", task.id);
+        await updateDoc(docRef, { title: newTitle });
+    } else {
+        saveLocalTasks();
+        renderTasks();
+    }
+}
+
+async function removeTask(task) {
+    if (currentUser && task.id) {
+        const docRef = doc(db, "users", currentUser.uid, "tasks", task.id);
+        await deleteDoc(docRef);
+    } else {
+        const index = tasks.indexOf(task);
+        if (index > -1) {
+            tasks.splice(index, 1);
+            saveLocalTasks();
+            updateCounter();
+            renderTasks();
+        }
+    }
+}
+
+async function clearAllTasksList() {
+    if (currentUser) {
+        const tasksRef = collection(db, "users", currentUser.uid, "tasks");
+        const snapshot = await getDocs(tasksRef);
+        const batch = writeBatch(db);
+        snapshot.forEach((docSnap) => {
+            batch.delete(docSnap.ref);
+        });
+        await batch.commit();
+    } else {
+        tasks.length = 0;
+        saveLocalTasks();
+        updateCounter();
+        renderTasks();
+    }
 }
 
 
 /* ==========================================================================
-   4. RENDERING & UI UPDATES
+   5. RENDERING & UI UPDATES
    ========================================================================== */
 
 function updateCounter() {
@@ -128,16 +294,22 @@ function createTaskElement(task) {
     li.append(checkBox, " ", taskText, " ", editButton, " ", deleteButton);
 
     // Item Action: Toggle Completion
-    checkBox.addEventListener("change", function () {
-        task.completed = checkBox.checked;
-        syncAppState();
+    checkBox.addEventListener("change", async function () {
+        try {
+            await updateTaskCompletion(task, checkBox.checked);
+        } catch (err) {
+            console.error("Error updating completion:", err);
+            checkBox.checked = !checkBox.checked;
+        }
     });
 
     // Item Action: Delete Task
-    deleteButton.addEventListener("click", function () {
-        const index = tasks.indexOf(task);
-        tasks.splice(index, 1);
-        syncAppState();
+    deleteButton.addEventListener("click", async function () {
+        try {
+            await removeTask(task);
+        } catch (err) {
+            console.error("Error deleting task:", err);
+        }
     });
 
     // Item Action: Open Edit Modal
@@ -177,11 +349,31 @@ function renderTasks() {
 
 
 /* ==========================================================================
-   5. EVENT LISTENERS
+   6. EVENT LISTENERS
    ========================================================================== */
 
+// Auth Buttons
+googleSignInBtn.addEventListener("click", async function () {
+    try {
+        await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+        console.error("Google sign-in error:", err);
+        if (err.code !== "auth/popup-closed-by-user" && err.code !== "auth/cancelled-popup-request") {
+            alert(`Sign-in failed: ${err.message}`);
+        }
+    }
+});
+
+signOutBtn.addEventListener("click", async function () {
+    try {
+        await signOut(auth);
+    } catch (err) {
+        console.error("Sign-out error:", err);
+    }
+});
+
 // Add Task
-addButton.addEventListener("click", function () {
+addButton.addEventListener("click", async function () {
     const taskTitle = taskInput.value.trim();
 
     if (taskTitle === "") {
@@ -189,15 +381,15 @@ addButton.addEventListener("click", function () {
         return;
     }
 
-    const task = {
-        title: taskTitle,
-        completed: false
-    };
-
-    tasks.push(task);
-    syncAppState();
-
     taskInput.value = "";
+    taskError.textContent = "";
+
+    try {
+        await addNewTask(taskTitle);
+    } catch (err) {
+        console.error("Error adding task:", err);
+        taskError.textContent = "Failed to save task. Please try again.";
+    }
 });
 
 taskInput.addEventListener("input", function () {
@@ -239,7 +431,7 @@ incompleteTasks.addEventListener("click", function () {
 });
 
 // Edit Modal Actions
-saveEditButton.addEventListener("click", function () {
+saveEditButton.addEventListener("click", async function () {
     const newTitle = editTaskInput.value.trim();
 
     if (newTitle === "") {
@@ -247,9 +439,13 @@ saveEditButton.addEventListener("click", function () {
         return;
     }
 
-    currentlyEditingTask.title = newTitle;
-    syncAppState();
-    editModal.style.display = "none";
+    try {
+        await updateTaskTitle(currentlyEditingTask, newTitle);
+        editModal.style.display = "none";
+    } catch (err) {
+        console.error("Error editing task:", err);
+        editTaskError.textContent = "Failed to update task.";
+    }
 });
 
 cancelEditButton.addEventListener("click", function () {
@@ -269,18 +465,45 @@ cancelClearAllButton.addEventListener("click", function () {
     clearAllModal.style.display = "none";
 });
 
-confirmClearAllButton.addEventListener("click", function () {
-    tasks.length = 0;
-    syncAppState();
-    clearAllModal.style.display = "none";
+confirmClearAllButton.addEventListener("click", async function () {
+    try {
+        await clearAllTasksList();
+        clearAllModal.style.display = "none";
+    } catch (err) {
+        console.error("Error clearing all tasks:", err);
+        alert("Failed to clear tasks. Please try again.");
+    }
 });
 
 
 /* ==========================================================================
-   6. APP INITIALIZATION
+   7. APP & AUTH INITIALIZATION
    ========================================================================== */
 
-// Load saved data and perform initial render
-tasks.push(...getTasks());
-updateCounter();
-renderTasks();
+// Listen to Auth state changes
+onAuthStateChanged(auth, async (user) => {
+    if (user) {
+        currentUser = user;
+        googleSignInBtn.style.display = "none";
+        userProfile.style.display = "flex";
+        userAvatar.src = user.photoURL || "icon.png";
+        userName.textContent = user.displayName || user.email || "Account";
+
+        await migrateLocalTasksToCloud(user.uid);
+        listenToTasks(user.uid);
+    } else {
+        currentUser = null;
+        if (unsubscribeSnapshot) {
+            unsubscribeSnapshot();
+            unsubscribeSnapshot = null;
+        }
+
+        userProfile.style.display = "none";
+        googleSignInBtn.style.display = "inline-flex";
+
+        tasks.length = 0;
+        tasks.push(...getLocalTasks());
+        updateCounter();
+        renderTasks();
+    }
+});
